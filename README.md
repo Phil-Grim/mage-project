@@ -34,13 +34,13 @@ Rename `dev.env` to simply `.env`— this will _ensure_ the file is not committe
 Now, let's build the container
 
 ```bash
-docker compose build
+docker-compose build
 ```
 
 Finally, start the Docker container:
 
 ```bash
-docker compose up
+docker-compose up
 ```
 
 Now, navigate to http://localhost:6789 in your browser! Voila! You're ready to get started with the course. 
