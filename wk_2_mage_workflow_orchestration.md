@@ -5,6 +5,30 @@
     - [What we are going to be building](#what-we-are-going-to-be-building)
     - [What is Orchestration](#what-is-orchestration)
     - [What does a good orchestration tool look like](#what-does-a-good-orchestration-solution-look-like)
+- [Intro to Mage](#intro-to-mage)
+    - [What is Mage](#what-is-mage)
+        - [Mage Benefits](#mage-benefits)
+        - [Anatomy of a Block](#anatomy-of-a-block)
+    - [Configuring Mage](#configuring-mage)
+    - [A simple pipeline]
+- [ETL: API to Postgres](#etl-api-to-postgres)
+    - [Configuring Postgres](#configuring-postgres)
+    - [Writing an ETL pipeline](#writing-an-etl-pipeline)
+- [ETL: API to GCS](#etl-api-to-gcs)
+    - [Configuring GCP](#configuring-gcp)
+    - [Writing an ETL Pipeline to GCS](#writing-an-etl-pipeline-to-gcp)
+- [ETL: GCS to BigQeury](#etl-gcs-to-bigquery)
+    - [Writing an ETL pipeline to BigQuery](#writing-an-etl-pipeline-to-bigquery)
+    - [Scheduling the Workflow](#scheduling-the-workflow)
+-  [Parameterized Execution](#parameterized-execution)
+    - [Parameterization](#parameterization)
+    - [Backfilling Pipelines](#backfilling-pipelines)
+    - [Mage Variables Documentation](#mage-variables-documentation)
+- [Deployment](#deployment)
+    - [Deployment Prerequisites](#deployment-prerequisites)
+    - [Google Cloud Permissions](#google-cloud-permissions)
+    - [Deploying to Google Cloud - Part 1](#deploying-to-google-cloud-part-1)
+    - [Deploying to Google Cloud - Part 2](#deploying-to-google-cloud-part-2)
 
 # Intro to Orchestration
 
@@ -107,7 +131,7 @@ Engineering best-practices **built-in**:
 4. Assertion - the test
 5. Dataframe - the only thing that is returned the function within the @data_loader block
 
-## Configure Mage
+## Configuring Mage
 
 Forked repo to github and followed the instructions in the ReadMe
 - Dockerfile and docker-compose yaml are in this repo to view, so just need to run `docker-compose build` and then `docker-compose up`
@@ -142,7 +166,7 @@ dev:
   POSTGRES_HOST: "{{ env_var('POSTGRES_HOST')}}"
   POSTGRES_PORT: "{{ env_var('POSTGRES_PORT')}}"
   ```
-## Writing an ETL Pipeline
+## Writing an ETL pipeline
 
 Will be loading data from an API (that takes the form of a compressed CSV file) and loading it into the local postgres database
 
@@ -264,7 +288,7 @@ Use a SQL data loader block (connected to Postgres + dev profile) to check that 
 SELECT * FROM ny_taxi.yellow_cab_data LIMIT 10;
 ```
 
-# ETL: API to GCS
+# ETL: API to GCS
 
 ## Configuring GCP 
 
@@ -291,7 +315,7 @@ Go to the Mage UI (at localhost:6789)
 GOOGLE_SERVICE_ACC_KEY_FILEPATH: "/home/src/evident-display-410312-3f3459224de6.json"
 ```
 
-## Writing an ETL Pipeline
+## Writing an ETL Pipeline to GCP
 
 Can firstly reuse the `load_api_data.py` block by dragging and dropping, once we've created a new batch pipeline called `api_to_gcs`
 - We can do he same thing with our `transform_taxi_data.py` block
@@ -374,7 +398,9 @@ def export_data(data, *args, **kwargs):
     )
 ```
 
-# ETL: GCS to BigQuery 
+# ETL: GCS to BigQuery
+
+## Writing an ETL pipeline to BigQuery
 
 New batch pipeline called `gcs_to_bigquery`
 
@@ -446,7 +472,7 @@ Below shows the SQL exporter block
 
 Cmd + Enter to run and the data is loaded to the specified table in the specified schema
 
-## Scheduling the Workflow
+## Scheduling the Workflow
 
 Go to Triggers in the Mage UI - can trigger the pipeline one of 3 ways:
 1. On a schedule
@@ -459,3 +485,158 @@ A trigger on a schedule
 - Once you've configured the settings, save changes and enable the trigger
 
 ![setting a trigger](images/02b_06.png)
+
+
+# Parameterized Execution
+
+## Parameterization 
+
+Clone the `api_to_gcs` pipeline saved as `api_to_gcs_parameterized`
+- The data loader and transformer blocks remain the same
+- The two data exporter blocks can be deleted to be replaced by a new block:
+
+`export_taxi_to_gcp_parameter`
+
+N.b.
+- kwargs argument contains a number of parameters - any variable that you declare and pass into your pipeline will be stored in this kwargs argument
+    - e.g. ```kwargs.get('execution_date')``` will return the execution date
+
+```python
+from mage_ai.settings.repo import get_repo_path
+from mage_ai.io.config import ConfigFileLoader
+from mage_ai.io.google_cloud_storage import GoogleCloudStorage
+from pandas import DataFrame
+from os import path
+
+if 'data_exporter' not in globals():
+    from mage_ai.data_preparation.decorators import data_exporter
+
+
+@data_exporter
+def export_data_to_google_cloud_storage(df: DataFrame, **kwargs) -> None:
+    """
+    Template for exporting data to a Google Cloud Storage bucket.
+    Specify your configuration settings in 'io_config.yaml'.
+
+    Docs: https://docs.mage.ai/design/data-loading#googlecloudstorage
+    """
+
+    now = kwargs.get('execution_date')
+    now_fpath = now.strftime("%Y/%m/%d") # date for nested file structure based on date of execution 
+
+
+    config_path = path.join(get_repo_path(), 'io_config.yaml')
+    config_profile = 'default'
+
+    bucket_name = 'mage-zoomcamp-evident-display-410312'
+    object_key = f'{now_fpath}/daily-trips.parquet'
+
+    GoogleCloudStorage.with_config(ConfigFileLoader(config_path, config_profile)).export(
+        df,
+        bucket_name,
+        object_key,
+    )
+```
+
+
+
+You can also define variables from the pipeline editor view on the right hand side:
+- Global Variables
+- Trigger Runtime Variables - execution_date is a default schedule trigger runtime variable
+    - You can add these as you define the trigger
+
+![Editing Variables](images/02b_07.png)
+
+## Backfilling Pipelines
+
+Say you lost some data or you have missing data and you need to re-run pipelines for multiple days, weeks, months -> typically would need to build a backfill pipeline which would simulate running the original workflow / DAG for each day
+
+In Mage you can more easily build backfill functionality out of the box:
+
+In `api_to_gcs_parameterized` -> go to backfill from the LHS toolbar -> New Backfill
+- You can then backfill by a date and time window, with a given interval type and unit (e.g. type = days, unit = 5 -> every 5 days) 
+- Useful given the execution_date parameter in this pipeline 
+
+## Mage Variables Documentation
+
+[Mage Variables Overview](https://docs.mage.ai/development/variables/overview)
+
+[Mage Runtime Variables](https://docs.mage.ai/getting-started/runtime-variable)
+
+# Deployment
+
+## Deployment Prerequisites
+
+Deploying Mage onto Google Cloud using Terraform
+- technically complex; tending more towards devops 
+
+**Prerequisites:**
+- Terraform - allows you to create resources 
+    - Will be creating an app using Google Cloud run; create a backend database in Google; create persistent storage on Google Cloud 
+    - Terraform creates this infrastructure as code; which can then be version controlled
+- gcloud cli - a programmatic way of interfacing with google cloud that hooks into terraform and allows you to authenticate and run the terraform commands 
+- Configure Google Cloud Permissions
+- Mage Terraform templates 
+
+Already have terraform installed + gcloud cli on my GCP VM
+
+## Google Cloud Permissions
+
+Go to IAM & ADMIN > use the mage-zoomcamp service account and edit to give the service account the following permissions
+    - artifact registry reader
+    - artifact registry writer 
+    - cloud run developer
+    - Cloud SQL admin
+    - Service account token creator 
+
+Mage-zoomcamp service account already set as an owner, and so has all the obove roles.
+
+These roles should allow you to deploy the terraform script 
+
+## Deploying to Google Cloud Part 1
+
+Check that gcloud is running:
+- displays the credentialed accounts
+
+```bash
+gcloud auth list
+# or
+gcloud storage ls # shows existing buckets
+```
+
+Now git clone mage's terraform templates:
+
+```bash
+git clone https://github.com/mage-ai/mage-ai-terraform-templates.git
+```
+
+Can see that there are terraform templates for aws, gcp and azure:
+- highlighted in blue = folders 
+- We'll use the gcp folder 
+
+![terraform templates folder](images/02b_08.png)
+
+## Deploying to Google Cloud Part 2
+
+[Instructions to Deploy Mage to GCP](https://docs.mage.ai/production/deploying-to-cloud/gcp/setup)
+    - I had to log into GCP from the CLI 
+    - Change a couple of variables in variables.tf
+    - Enable Cloud Filestore API
+    - Terraform Apply took ~15minutes to run
+    - Provisions 21 resources
+        
+
+You then have, among other things, a SQL instance (connected to Postgres), and a Cloud Run Service
+- The Cloud Run service provides a url which (once you've changed Ingress Control on the Networking tab to "All") will direct you to the Mage UI, where you can create your pipelines
+
+Also defined a filestore instance --> which will store the file system for the Mage project; which means that if you stop and then start the project all the files (pipelines, blocks) will still be there
+
+The project we've created is new / empty
+- If we wanted to develop locally (using the resources we've created thus far, in the Mage instance we created using docker-compose) and then provision to the cloud would be to use git sync functionality   
+- Essentially involves developing locally, as we've done in this course, then pushing to a git repo, which is then synced to the cloud hosted instance
+
+To now destroy the 21 resources we provisioned:
+
+```bash
+terraform destroy
+```
